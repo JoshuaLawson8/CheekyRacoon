@@ -15,24 +15,6 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "cheekyRacoon.openLogsFolder",
-        "title": "CheekyRacoon: Open Logs Folder"
-      },
-      {
-        "command": "cheekyRacoon.exportLogs",
-        "title": "CheekyRacoon: Export Telemetry Logs"
-      },
-      {
-        "command": "cheekyRacoon.toggle",
-        "title": "CheekyRacoon: Toggle Telemetry Recording"
-      },
-      {
-        "command": "cheekyRacoon.resetSalt",
-        "title": "CheekyRacoon: Reset Anonymous Salt"
-      }
-    ],
     "configuration": {
       "title": "CheekyRacoon",
       "properties": {
@@ -52,7 +34,7 @@
     "test": "node esbuild.js --test && node --test dist-test/*.test.js"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.20.5",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.24.0",
     "typescript": "^5.6.0"

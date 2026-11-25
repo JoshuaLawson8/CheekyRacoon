@@ -2,30 +2,24 @@
 
 # CheekyRacoon
 
-CheekyRacoon is all about helping students who ARE doing their homework without LLM assistance provide a receipt of their work. It isn't a catch all to prevent all cheating-that's essentially impossible since this is an open source extension.
+CheekyRacoon gives students who do their homework without LLM assistance a local receipt of their work in VS Code.
 
-There are efforts made to prevent this (hash chaining, signing based on source code), but these are not guarantees.
+## Log format
 
-## Student Privacy Focus
+Each recorded VS Code session writes one JSONL file in the `logs` folder under the extension’s global storage directory. The first line records the extension version, VS Code version, and start time. Every subsequent line is a three-element array `[event, timestamp, previousHash]`. Timestamps are Unix milliseconds.
 
-- First and foremost, this extension is completely offline. No student data ever leaves their machine without them exporting it.
-- All data that IS collected has been hashed and obscured. No source code, filenames, paths, git URLs, usernames, or individual keystrokes are logged. Timing for these things IS logged.
+```jsonl
+{"extensionVersion":"0.1.0","vscodeVersion":"1.85.0","timestamp":1760000000000}
+["file_save",1760000001500,"tCdpU7aFgdDmb7lhS5iJ97uiHgdV-Ch8Fd6dAjN6SH4"]
+```
 
-## Events Captured
+To recompute `previousHash`, concatenate the exact preceding JSON line (excluding its newline) with its own decimal timestamp. Hash the UTF-8 bytes with SHA-256 and encode the digest as unpadded base64url.
 
-- `session_start` / `session_end`
-- `window_focus` (`{ focused }`)
-- `file_open` / `file_save` (`{ lineCount }`)
-- `file_close`
-- `editor_switch` (`{ lineCount }`)
-- `edit` (`{ offset, charsInserted, charsDeleted, reason? }`)
+## Events captured
 
-## Commands
+The extension records `file_open`, `file_save`, `file_close`, `edit`, `editor_switch`, `window_focus`, `window_blur`, and `session_end`. Each content change notification produces one `edit` event. File contents, paths, and user identifiers stay out of the log.
 
-- **CheekyRacoon: Open Logs Folder** — Opens the local JSONL logs directory.
-- **CheekyRacoon: Export Telemetry Logs** — Merges all daily JSONL files into a single `.jsonl` file.
-- **CheekyRacoon: Toggle Telemetry Recording** — Pauses or resumes logging (also clickable in the status bar).
-- **CheekyRacoon: Reset Anonymous Salt** — Rotates the per-install secret salt so future events cannot be linked to past IDs.
+Recording is offline. Set `cheekyRacoon.enabled` to `false` to pause it.
 
 ## Development
 
