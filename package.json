@@ -40,13 +40,6 @@
           "type": "boolean",
           "default": true,
           "description": "Enable or disable local anonymous telemetry logging."
-        },
-        "cheekyRacoon.editBurstWindowMs": {
-          "type": "number",
-          "default": 2000,
-          "minimum": 500,
-          "maximum": 30000,
-          "description": "Inactivity window (ms) before flushing an aggregated edit burst event."
         }
       }
     }
