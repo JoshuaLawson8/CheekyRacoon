@@ -1,24 +1,16 @@
 ![Mlehhhh](./images/mlehh.jpg)
 
-# CheekyRacoon Telemetry (v0.1)
+# CheekyRacoon
 
-Anonymous, offline VS Code programming telemetry focused on zero-PII logging, irreversible cryptographic hashing, and reliable project matching.
+CheekyRacoon is all about helping students who ARE doing their homework without LLM assistance provide a receipt of their work. It isn't a catch all to prevent all cheating-that's essentially impossible since this is an open source extension. 
 
-## Privacy & Security Design
+There are efforts made to prevent this (hash chaining, signing based on source code), but these are not guarantees.
 
-- **Per-install random salt**: A 256-bit cryptographically random key is generated on first activation and stored exclusively in VS Code's OS-backed `SecretStorage` — never written to logs or settings.
-- **Domain-separated HMAC-SHA256**: `installId`, `projectId`, and `fileId` are computed with domain separation (`install`, `project`, `file`). `fileId` is further scoped by `projectId` so common filenames like `src/index.ts` do not collide across projects.
-- **Metadata-only events**: No source code, filenames, paths, git URLs, usernames, or individual keystroke timings are logged. Edits are aggregated into debounced `edit_burst` summaries (char/line deltas, undo/redo counts, duration).
-- **100% offline**: Events append locally to daily JSONL files in VS Code's `globalStorageUri/logs/telemetry-YYYY-MM-DD.jsonl`. No network requests are made.
 
-## Project Matching Priority
+## Student Privacy Focus
 
-Files are resolved locally to a canonical fingerprint (immediately HMAC-hashed and discarded):
-
-1. `git-remote` — Normalized `origin` remote URL from `.git/config` (credentials stripped; HTTPS and SSH normalize identically so multiple clones match the same `projectId`).
-2. `git-root` — Local Git repository root path (when no `origin` remote exists).
-3. `workspace` — VS Code workspace folder path.
-4. `none` — Loose file outside any Git repo or workspace.
+- First and foremost, this extension is completely offline. No student data ever leaves their machine without them exporting it.
+- All data that IS collected has been hashed and obscured.  No source code, filenames, paths, git URLs, usernames, or individual keystrokes are logged. 
 
 ## Events Captured
 
