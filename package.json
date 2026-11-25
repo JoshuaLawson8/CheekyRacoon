@@ -1,6 +1,6 @@
 {
   "name": "cheeky-racoon",
-  "displayName": "CheekyRacoon Telemetry",
+  "displayName": "CheekyRacoon",
   "description": "Anonymous, offline programming telemetry for student programming assignments.",
   "version": "0.1.0",
   "publisher": "Joshua Lawson",
@@ -34,7 +34,7 @@
       }
     ],
     "configuration": {
-      "title": "CheekyRacoon Telemetry",
+      "title": "CheekyRacoon",
       "properties": {
         "cheekyRacoon.enabled": {
           "type": "boolean",
