@@ -3,7 +3,6 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { TelemetryHasher } from './hasher';
 import { JsonlTelemetryLogger } from './logger';
-import { ProjectMatcher } from './projectMatcher';
 import { TelemetryTracker } from './tracker';
 
 const SALT_SECRET_KEY = 'cheekyRacoon.installSalt.v1';
@@ -13,21 +12,17 @@ let activeTracker: TelemetryTracker | undefined;
 async function getOrCreateInstallSalt(
   secrets: vscode.SecretStorage
 ): Promise<string> {
-  const existing = await secrets.get(SALT_SECRET_KEY);
-  if (existing && /^[0-9a-fA-F]{64,}$/.test(existing.trim())) {
-    return existing.trim();
+  const existing = (await secrets.get(SALT_SECRET_KEY))?.trim();
+  if (existing && TelemetryHasher.isValidSalt(existing)) {
+    return existing;
   }
   const fresh = TelemetryHasher.generateSaltHex();
   await secrets.store(SALT_SECRET_KEY, fresh);
   return fresh;
 }
 
-function getConfig() {
-  const cfg = vscode.workspace.getConfiguration('cheekyRacoon');
-  return {
-    enabled: cfg.get<boolean>('enabled', true),
-    editBurstWindowMs: cfg.get<number>('editBurstWindowMs', 2000),
-  };
+function recordingEnabled(): boolean {
+  return vscode.workspace.getConfiguration('cheekyRacoon').get('enabled', true);
 }
 
 function updateStatusBar(item: vscode.StatusBarItem, enabled: boolean): void {
@@ -40,19 +35,9 @@ function updateStatusBar(item: vscode.StatusBarItem, enabled: boolean): void {
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const saltHex = await getOrCreateInstallSalt(context.secrets);
   const hasher = new TelemetryHasher(saltHex);
-  const projectMatcher = new ProjectMatcher(hasher);
-
   const logsDir = path.join(context.globalStorageUri.fsPath, 'logs');
   const logger = new JsonlTelemetryLogger(logsDir);
-
-  const initialConfig = getConfig();
-  const tracker = new TelemetryTracker(
-    hasher,
-    projectMatcher,
-    logger,
-    initialConfig.enabled,
-    initialConfig.editBurstWindowMs
-  );
+  const tracker = new TelemetryTracker(hasher, logger, recordingEnabled());
   activeTracker = tracker;
 
   const statusBar = vscode.window.createStatusBarItem(
@@ -60,25 +45,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     50
   );
   statusBar.command = 'cheekyRacoon.toggle';
-  updateStatusBar(statusBar, initialConfig.enabled);
+  updateStatusBar(statusBar, tracker.enabled);
   statusBar.show();
 
   context.subscriptions.push(
-    tracker,
     statusBar,
 
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('cheekyRacoon')) {
-        const updated = getConfig();
-        tracker.setEnabled(updated.enabled);
-        tracker.setEditBurstWindowMs(updated.editBurstWindowMs);
-        updateStatusBar(statusBar, updated.enabled);
+      if (e.affectsConfiguration('cheekyRacoon.enabled')) {
+        tracker.enabled = recordingEnabled();
+        updateStatusBar(statusBar, tracker.enabled);
       }
     }),
 
     vscode.commands.registerCommand('cheekyRacoon.openLogsFolder', async () => {
-      await fs.mkdir(logger.directoryPath, { recursive: true });
-      await vscode.env.openExternal(vscode.Uri.file(logger.directoryPath));
+      await fs.mkdir(logsDir, { recursive: true });
+      await vscode.env.openExternal(vscode.Uri.file(logsDir));
     }),
 
     vscode.commands.registerCommand('cheekyRacoon.exportLogs', async () => {
@@ -101,10 +83,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     vscode.commands.registerCommand('cheekyRacoon.toggle', async () => {
       const cfg = vscode.workspace.getConfiguration('cheekyRacoon');
-      const nextEnabled = !cfg.get<boolean>('enabled', true);
-      await cfg.update('enabled', nextEnabled, vscode.ConfigurationTarget.Global);
-      tracker.setEnabled(nextEnabled);
-      updateStatusBar(statusBar, nextEnabled);
+      const nextEnabled = !tracker.enabled;
+      const target = cfg.inspect<boolean>('enabled')?.workspaceValue === undefined
+        ? vscode.ConfigurationTarget.Global
+        : vscode.ConfigurationTarget.Workspace;
+      await cfg.update('enabled', nextEnabled, target);
       vscode.window.showInformationMessage(
         nextEnabled
           ? 'CheekyRacoon telemetry resumed.'
@@ -124,20 +107,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       const freshSalt = TelemetryHasher.generateSaltHex();
       await context.secrets.store(SALT_SECRET_KEY, freshSalt);
-      hasher.rotateSalt(freshSalt);
-      tracker.clearIdentityCaches();
+      tracker.resetIdentities(new TelemetryHasher(freshSalt));
       vscode.window.showInformationMessage(
         'CheekyRacoon anonymous salt rotated.'
       );
     })
   );
 
-  tracker.start();
+  tracker.start(context.subscriptions);
 }
 
 export async function deactivate(): Promise<void> {
-  if (activeTracker) {
-    await activeTracker.shutdown();
-    activeTracker = undefined;
-  }
+  await activeTracker?.shutdown();
+  activeTracker = undefined;
 }

@@ -11,16 +11,9 @@ interface CachedProject {
 
 interface GitRepoLocation {
   gitRoot: string;
-  gitDir: string;
   commonDir: string;
 }
 
-/**
- * Normalizes a Git remote URL into a credential-free canonical form so the same
- * repository hashes identically regardless of HTTPS vs SSH or auth tokens.
- *
- * Returns null for local filesystem paths or unparseable values.
- */
 export function normalizeGitRemoteUrl(rawUrl: string): string | null {
   const trimmed = rawUrl.trim();
   if (!trimmed) {
@@ -65,19 +58,12 @@ export function normalizeGitRemoteUrl(rawUrl: string): string | null {
   return `${cleanHost}/${cleanPath}`;
 }
 
-/**
- * Extracts the `url` entry from `[remote "origin"]` in a `.git/config` file.
- */
 export function parseOriginRemoteFromGitConfig(configContent: string): string | null {
   const lines = configContent.split(/\r?\n/);
   let inOriginSection = false;
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
-    if (!line || line.startsWith('#') || line.startsWith(';')) {
-      continue;
-    }
-
     if (line.startsWith('[')) {
       const sectionMatch = /^\[\s*remote\s+"([^"]+)"\s*\]$/i.exec(line);
       inOriginSection = sectionMatch !== null && sectionMatch[1] === 'origin';
@@ -113,7 +99,7 @@ async function resolveGitRepo(startDir: string): Promise<GitRepoLocation | null>
     try {
       const stat = await fs.stat(dotGitPath);
       if (stat.isDirectory()) {
-        return { gitRoot: current, gitDir: dotGitPath, commonDir: dotGitPath };
+        return { gitRoot: current, commonDir: dotGitPath };
       }
       if (stat.isFile()) {
         const content = await fs.readFile(dotGitPath, 'utf8');
@@ -130,7 +116,7 @@ async function resolveGitRepo(startDir: string): Promise<GitRepoLocation | null>
           } catch {
             // Standard submodule or standalone gitdir without commondir file.
           }
-          return { gitRoot: current, gitDir, commonDir };
+          return { gitRoot: current, commonDir };
         }
       }
     } catch {
@@ -145,61 +131,33 @@ async function resolveGitRepo(startDir: string): Promise<GitRepoLocation | null>
   }
 }
 
-/**
- * Resolves local files and workspaces to stable, anonymous project and file IDs.
- *
- * Resolution priority:
- * 1. Git `origin` remote URL (normalized, credential-stripped) -> `git-remote`
- * 2. Git repository root path -> `git-root`
- * 3. VS Code workspace folder path -> `workspace`
- * 4. Loose file outside any repo/workspace -> `none`
- */
 export class ProjectMatcher {
-  private readonly dirCache = new Map<string, CachedProject | null>();
+  private readonly dirCache = new Map<string, Promise<CachedProject | null>>();
 
   constructor(private readonly hasher: TelemetryHasher) {}
-
-  clearCache(): void {
-    this.dirCache.clear();
-  }
 
   async resolveDocumentIdentity(
     filePath: string | null,
     workspaceFolderPath: string | null,
     fallbackKey?: string
   ): Promise<DocumentIdentity> {
-    if (!filePath) {
-      const project = workspaceFolderPath
-        ? await this.resolveDirectoryProject(workspaceFolderPath, workspaceFolderPath)
-        : null;
-      const projectId = project?.projectId ?? null;
-      const projectSource = project?.projectSource ?? 'none';
-      const fileId = fallbackKey
-        ? this.hasher.hashFile(projectId, `untitled:${fallbackKey}`)
-        : null;
-      return { projectId, projectSource, fileId };
+    const dir = filePath ? path.dirname(filePath) : workspaceFolderPath;
+    const project = dir ? await this.resolveDirectoryProject(dir, workspaceFolderPath) : null;
+    const projectId = project?.projectId ?? null;
+    let fileKey: string | undefined;
+    if (filePath) {
+      fileKey = project ? toPosixRelativePath(project.rootPath, filePath) : normalizePathForHashing(filePath);
+    } else if (fallbackKey) {
+      fileKey = `untitled:${fallbackKey}`;
     }
-
-    const dir = path.dirname(filePath);
-    const project = await this.resolveDirectoryProject(dir, workspaceFolderPath);
-
-    if (project) {
-      const relPath = toPosixRelativePath(project.rootPath, filePath);
-      return {
-        projectId: project.projectId,
-        projectSource: project.projectSource,
-        fileId: this.hasher.hashFile(project.projectId, relPath),
-      };
-    }
-
     return {
-      projectId: null,
-      projectSource: 'none',
-      fileId: this.hasher.hashFile(null, normalizePathForHashing(filePath)),
+      projectId,
+      projectSource: project?.projectSource ?? 'none',
+      fileId: fileKey === undefined ? null : this.hasher.hashFile(projectId, fileKey),
     };
   }
 
-  private async resolveDirectoryProject(
+  private resolveDirectoryProject(
     dirPath: string,
     workspaceFolderPath: string | null
   ): Promise<CachedProject | null> {
@@ -207,42 +165,28 @@ export class ProjectMatcher {
       workspaceFolderPath ? normalizePathForHashing(workspaceFolderPath) : ''
     }`;
 
-    if (this.dirCache.has(cacheKey)) {
-      return this.dirCache.get(cacheKey) ?? null;
+    let project = this.dirCache.get(cacheKey);
+    if (!project) {
+      project = this.findProject(dirPath, workspaceFolderPath);
+      this.dirCache.set(cacheKey, project);
     }
+    return project;
+  }
 
-    let resolved: CachedProject | null = null;
+  private async findProject(dirPath: string, workspaceFolderPath: string | null): Promise<CachedProject | null> {
     const gitRepo = await resolveGitRepo(dirPath);
-
-    if (gitRepo) {
-      const remoteUrl = await this.readNormalizedOriginUrl(gitRepo.commonDir);
-      if (remoteUrl) {
-        resolved = {
-          projectId: this.hasher.hashProject(`git-remote:${remoteUrl}`),
-          projectSource: 'git-remote',
-          rootPath: gitRepo.gitRoot,
-        };
-      } else {
-        resolved = {
-          projectId: this.hasher.hashProject(
-            `git-root:${normalizePathForHashing(gitRepo.gitRoot)}`
-          ),
-          projectSource: 'git-root',
-          rootPath: gitRepo.gitRoot,
-        };
-      }
-    } else if (workspaceFolderPath) {
-      resolved = {
-        projectId: this.hasher.hashProject(
-          `workspace:${normalizePathForHashing(workspaceFolderPath)}`
-        ),
-        projectSource: 'workspace',
-        rootPath: workspaceFolderPath,
-      };
+    const rootPath = gitRepo?.gitRoot ?? workspaceFolderPath;
+    if (!rootPath) {
+      return null;
     }
-
-    this.dirCache.set(cacheKey, resolved);
-    return resolved;
+    const remote = gitRepo && await this.readNormalizedOriginUrl(gitRepo.commonDir);
+    const localSource = gitRepo ? 'git-root' : 'workspace';
+    const projectSource = remote ? 'git-remote' : localSource;
+    return {
+      rootPath,
+      projectSource,
+      projectId: this.hasher.hashProject(`${projectSource}:${remote ?? normalizePathForHashing(rootPath)}`),
+    };
   }
 
   private async readNormalizedOriginUrl(gitCommonDir: string): Promise<string | null> {

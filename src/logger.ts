@@ -1,56 +1,49 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { TelemetryEvent } from './types';
+import type { TelemetryEvent, TelemetryEventData } from './types';
 
 export interface ExportSummary {
   filesMerged: number;
   eventCount: number;
 }
 
-/**
- * Offline, append-only JSONL telemetry logger storing daily log files locally.
- * Serializes writes through a promise chain to preserve strict event ordering.
- */
 export class JsonlTelemetryLogger {
   private writeQueue: Promise<void> = Promise.resolve();
   private dirReady = false;
 
-  constructor(private readonly logsDir: string) {}
+  constructor(readonly directoryPath: string) {}
 
-  get directoryPath(): string {
-    return this.logsDir;
-  }
-
-  enqueue(event: TelemetryEvent): void {
-    const line = `${JSON.stringify(event)}\n`;
-    const fileName = `telemetry-${event.ts.slice(0, 10)}.jsonl`;
-    const filePath = path.join(this.logsDir, fileName);
-
-    this.writeQueue = this.writeQueue
-      .then(async () => {
+  enqueue(event: TelemetryEvent | Promise<TelemetryEvent>, rows?: readonly TelemetryEventData[]): void {
+    const previous = this.writeQueue;
+    this.writeQueue = Promise.all([previous, event])
+      .then(async ([, record]) => {
         if (!this.dirReady) {
-          await fs.mkdir(this.logsDir, { recursive: true });
+          await fs.mkdir(this.directoryPath, { recursive: true });
           this.dirReady = true;
         }
-        await fs.appendFile(filePath, line, 'utf8');
+        const filePath = path.join(this.directoryPath, `telemetry-${record.ts.slice(0, 10)}.jsonl`);
+        const lines = rows
+          ? rows.map(data => JSON.stringify({ ...record, data })).join('\n')
+          : JSON.stringify(record);
+        await fs.appendFile(filePath, lines + '\n');
       })
       .catch((err) => {
-        // Keep queue alive if an individual write fails.
         console.error('[CheekyRacoon] Failed to write telemetry event:', err);
+        return previous;
       });
   }
 
-  async flush(): Promise<void> {
-    await this.writeQueue;
+  flush(): Promise<void> {
+    return this.writeQueue;
   }
 
   async listLogFiles(): Promise<string[]> {
     try {
-      const entries = await fs.readdir(this.logsDir);
+      const entries = await fs.readdir(this.directoryPath);
       return entries
         .filter((name) => name.startsWith('telemetry-') && name.endsWith('.jsonl'))
         .sort()
-        .map((name) => path.join(this.logsDir, name));
+        .map((name) => path.join(this.directoryPath, name));
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
         return [];

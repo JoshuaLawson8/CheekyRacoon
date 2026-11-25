@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 1 as const;
+export const SCHEMA_VERSION = 2;
 
 export type ProjectSource = 'git-remote' | 'git-root' | 'workspace' | 'none';
 
@@ -10,32 +10,16 @@ export type TelemetryEventType =
   | 'file_close'
   | 'file_save'
   | 'editor_switch'
-  | 'edit_burst';
+  | 'edit';
 
-export interface WindowFocusData {
-  focused: boolean;
-}
-
-export interface FileMetricData {
-  lineCount: number;
-}
-
-export interface EditBurstData {
-  changeEvents: number;
+export interface EditData {
+  offset: number;
   charsInserted: number;
   charsDeleted: number;
-  linesAdded: number;
-  linesRemoved: number;
-  undoEvents: number;
-  redoEvents: number;
-  durationMs: number;
-  lineCount: number;
+  reason?: 'undo' | 'redo';
 }
 
-export type TelemetryEventData =
-  | WindowFocusData
-  | FileMetricData
-  | EditBurstData;
+export type TelemetryEventData = { focused: boolean } | { lineCount: number } | EditData;
 
 export interface DocumentIdentity {
   projectId: string | null;
@@ -43,20 +27,13 @@ export interface DocumentIdentity {
   fileId: string | null;
 }
 
-/**
- * Strictly metadata-only telemetry record.
- * Contains no raw file paths, repository URLs, usernames, or source code.
- */
-export interface TelemetryEvent {
+export interface TelemetryEvent extends DocumentIdentity {
   schemaVersion: typeof SCHEMA_VERSION;
   ts: string;
   monoMs: number;
   sessionId: string;
   installId: string;
   event: TelemetryEventType;
-  projectId: string | null;
-  projectSource: ProjectSource;
-  fileId: string | null;
   languageId: string | null;
   data?: TelemetryEventData;
 }

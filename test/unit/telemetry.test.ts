@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, it } from 'node:test';
-import { EditAccumulator, FlushedEditBurst } from '../../src/editAccumulator';
+import { editRanges } from '../../src/edits';
 import { TelemetryHasher } from '../../src/hasher';
 import { JsonlTelemetryLogger } from '../../src/logger';
 import {
@@ -34,16 +34,13 @@ describe('TelemetryHasher', () => {
     assert.notEqual(a.hash('project', 'same'), a.hash('file', 'same'));
   });
 
-  it('produces unrelated hashes under different salts and after rotation', () => {
+  it('produces unrelated hashes under different salts', () => {
     const h1 = new TelemetryHasher(TelemetryHasher.generateSaltHex());
     const h2 = new TelemetryHasher(TelemetryHasher.generateSaltHex());
 
     assert.notEqual(h1.installId, h2.installId);
     assert.notEqual(h1.hashProject('my-project'), h2.hashProject('my-project'));
 
-    const oldInstallId = h1.installId;
-    h1.rotateSalt(TelemetryHasher.generateSaltHex());
-    assert.notEqual(h1.installId, oldInstallId);
   });
 
   it('scopes file hashes to their projectId', () => {
@@ -133,7 +130,6 @@ describe('Git remote normalization & ProjectMatcher', () => {
       assert.equal(id1.projectId, id2.projectId);
       assert.equal(id1.fileId, id2.fileId);
 
-      // Verify zero raw PII/path leakage
       const serialized = JSON.stringify(id1).toLowerCase();
       for (const forbidden of ['alice', 'token', 'secretproject', 'main.ts', 'github']) {
         assert.equal(serialized.includes(forbidden), false);
@@ -146,7 +142,6 @@ describe('Git remote normalization & ProjectMatcher', () => {
       const hasher = new TelemetryHasher(TelemetryHasher.generateSaltHex());
       const matcher = new ProjectMatcher(hasher);
 
-      // 1. Local git repo without origin remote
       const localGit = path.join(tmp, 'local-git');
       await fs.mkdir(path.join(localGit, '.git'), { recursive: true });
       const gitRootId = await matcher.resolveDocumentIdentity(
@@ -156,7 +151,6 @@ describe('Git remote normalization & ProjectMatcher', () => {
       assert.equal(gitRootId.projectSource, 'git-root');
       assert.ok(gitRootId.projectId);
 
-      // 2. Plain workspace folder (no .git)
       const plainWs = path.join(tmp, 'plain-ws');
       await fs.mkdir(plainWs, { recursive: true });
       const wsId = await matcher.resolveDocumentIdentity(
@@ -166,7 +160,6 @@ describe('Git remote normalization & ProjectMatcher', () => {
       assert.equal(wsId.projectSource, 'workspace');
       assert.ok(wsId.projectId);
 
-      // 3. Loose file outside any workspace or repo
       const looseId = await matcher.resolveDocumentIdentity(
         path.join(tmp, 'scratch.txt'),
         null
@@ -178,53 +171,27 @@ describe('Git remote normalization & ProjectMatcher', () => {
   });
 });
 
-describe('EditAccumulator', () => {
-  it('aggregates edits into a single metadata-only burst and flushes cleanly', () => {
-    const bursts: FlushedEditBurst[] = [];
-    const acc = new EditAccumulator(5000, (b) => bursts.push(b));
-    const identity = {
-      projectId: 'p1',
-      projectSource: 'workspace' as const,
-      fileId: 'f1',
-    };
+describe('editRanges', () => {
+  it('preserves each changed range in UTF-16 units and discards its text', () => {
+    assert.deepEqual(editRanges([
+      { rangeOffset: 12, rangeLength: 0, text: '🦝\r\n' },
+      { rangeOffset: 5, rangeLength: 3, text: 'x' },
+      { rangeOffset: 0, rangeLength: 2, text: '' },
+    ], 'undo'), [
+      { offset: 12, charsInserted: 4, charsDeleted: 0, reason: 'undo' },
+      { offset: 5, charsInserted: 1, charsDeleted: 3, reason: 'undo' },
+      { offset: 0, charsInserted: 0, charsDeleted: 2, reason: 'undo' },
+    ]);
+  });
 
-    acc.record(
-      'doc-1',
-      identity,
-      'typescript',
-      [{ insertedChars: 12, deletedChars: 0, insertedNewlines: 1, deletedNewlines: 0 }],
-      10,
-      1000
-    );
-    acc.record(
-      'doc-1',
-      identity,
-      'typescript',
-      [{ insertedChars: 3, deletedChars: 5, insertedNewlines: 0, deletedNewlines: 1 }],
-      9,
-      1450,
-      'undo'
-    );
-
-    assert.equal(bursts.length, 0);
-    acc.flushDocument('doc-1');
-    assert.equal(bursts.length, 1);
-    assert.deepEqual(bursts[0].data, {
-      changeEvents: 2,
-      charsInserted: 15,
-      charsDeleted: 5,
-      linesAdded: 1,
-      linesRemoved: 1,
-      undoEvents: 1,
-      redoEvents: 0,
-      durationMs: 450,
-      lineCount: 9,
-    });
+  it('skips empty changes', () => {
+    assert.deepEqual(editRanges([]), []);
+    assert.deepEqual(editRanges([{ rangeOffset: 3, rangeLength: 0, text: '' }]), []);
   });
 });
 
 describe('JsonlTelemetryLogger', () => {
-  it('writes ordered daily JSONL files and merges them on export', async () => {
+  it('exports pending range edits in notification order alongside older daily logs', async () => {
     await withTempDir(async (tmp) => {
       const logsDir = path.join(tmp, 'logs');
       const logger = new JsonlTelemetryLogger(logsDir);
@@ -235,34 +202,45 @@ describe('JsonlTelemetryLogger', () => {
         monoMs,
         sessionId: 'sess-1',
         installId: 'a'.repeat(64),
-        event: 'file_save',
+        event: 'edit',
         projectId: 'b'.repeat(64),
         projectSource: 'git-remote',
         fileId: 'c'.repeat(64),
         languageId: 'typescript',
-        data: { lineCount: 42 },
       });
 
-      logger.enqueue(makeEvent('2026-11-24T10:00:00.000Z', 100));
-      logger.enqueue(makeEvent('2026-11-24T10:01:00.000Z', 200));
-      logger.enqueue(makeEvent('2026-11-25T09:00:00.000Z', 300));
-      await logger.flush();
+      const legacy = { ...makeEvent('2026-11-23T10:00:00.000Z', 10),
+        schemaVersion: 1, event: 'edit_burst', data: { changeEvents: 2, charsInserted: 3 } };
+      await fs.mkdir(logsDir);
+      await fs.writeFile(path.join(logsDir, 'telemetry-2026-11-23.jsonl'), JSON.stringify(legacy) + '\n');
 
-      const files = await logger.listLogFiles();
-      assert.equal(files.length, 2);
+      let resolveFirst!: (event: TelemetryEvent) => void;
+      const first = new Promise<TelemetryEvent>(resolve => { resolveFirst = resolve; });
+      logger.enqueue(first, editRanges([{ rangeOffset: 0, rangeLength: 0, text: 'a' }]));
+      logger.enqueue(makeEvent('2026-11-24T10:00:00.001Z', 101),
+        editRanges([{ rangeOffset: 1, rangeLength: 0, text: 'b' }]));
+      logger.enqueue(makeEvent('2026-11-25T09:00:00.000Z', 300), editRanges([
+        { rangeOffset: 9, rangeLength: 0, text: 'private code' },
+        { rangeOffset: 3, rangeLength: 1, text: '' },
+      ], 'redo'));
 
       const exportPath = path.join(tmp, 'export', 'merged.jsonl');
-      const summary = await logger.exportAllLogs(exportPath);
-      assert.deepEqual(summary, { filesMerged: 2, eventCount: 3 });
+      const exporting = logger.exportAllLogs(exportPath);
+      resolveFirst(makeEvent('2026-11-24T10:00:00.000Z', 100));
+      assert.deepEqual(await exporting, { filesMerged: 3, eventCount: 5 });
 
       const exported = (await fs.readFile(exportPath, 'utf8'))
         .trim()
         .split('\n')
-        .map((line) => JSON.parse(line) as TelemetryEvent);
-      assert.deepEqual(
-        exported.map((e) => e.monoMs),
-        [100, 200, 300]
-      );
+        .map(line => JSON.parse(line));
+      assert.deepEqual(exported[0], legacy);
+      assert.deepEqual(exported.slice(1).map(e => e.monoMs), [100, 101, 300, 300]);
+      assert.deepEqual(exported.slice(1).map(e => e.data), [
+        { offset: 0, charsInserted: 1, charsDeleted: 0 },
+        { offset: 1, charsInserted: 1, charsDeleted: 0 },
+        { offset: 9, charsInserted: 12, charsDeleted: 0, reason: 'redo' },
+        { offset: 3, charsInserted: 0, charsDeleted: 1, reason: 'redo' },
+      ]);
     });
   });
 });
